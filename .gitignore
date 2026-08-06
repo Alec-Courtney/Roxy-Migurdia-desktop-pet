@@ -1,0 +1,52 @@
+# JavaScript dependencies and package-manager cache
+node_modules/
+.pnpm-store/
+
+# Electron build output (keep only the portable community build in Git)
+release/*
+!release/RoxyDesktopPet-1.0.0-x64.exe
+dist/
+out/
+
+# Python environments and caches used by the frame-processing scripts
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Downloaded interpolation tools/models and regenerable working frames
+tools/
+tmp/
+scripts/
+assets/sheets/
+assets/frames/
+assets/animations/cast/
+assets/animations/storm/
+
+# Local source/reference material (novel text, episode video, etc.)
+references/
+reference-materials/
+source-materials/
+/*.txt
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.zip
+*.7z
+*.rar
+
+# Local image-processing intermediates
+assets/roxy-chroma.png
+assets/roxy-reference-preview.jpg
+
+# Logs, local configuration and OS/editor noise
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

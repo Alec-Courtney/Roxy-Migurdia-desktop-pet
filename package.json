@@ -1,0 +1,42 @@
+{
+  "name": "roxy-desktop-pet",
+  "version": "1.0.0",
+  "description": "一个安静陪伴在桌面的洛琪希桌宠",
+  "main": "main.js",
+  "author": "",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.roxy.desktop.pet",
+    "productName": "洛琪希桌宠",
+    "electronDist": "node_modules/electron/dist",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "assets/roxy-reference.png",
+      "assets/frames-unified/**/*",
+      "assets/animations/**/*",
+      "!assets/animations/cast/**/*",
+      "!assets/animations/storm/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "portable",
+      "icon": "assets/roxy-reference.png",
+      "artifactName": "RoxyDesktopPet-${version}-${arch}.${ext}"
+    }
+  }
+}

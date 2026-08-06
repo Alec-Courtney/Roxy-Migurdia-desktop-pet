@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>洛琪希桌宠</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main id="pet" aria-label="洛琪希桌宠">
+      <div id="bubble" class="bubble" role="status" aria-live="polite"></div>
+      <div class="character-stage">
+        <div class="magic-aura" aria-hidden="true"></div>
+        <div id="particles" class="particles" aria-hidden="true"></div>
+        <img
+          id="sprite"
+          class="sprite"
+          src="../assets/frames-unified/turn-front.png"
+          alt="洛琪希"
+          draggable="false"
+        />
+        <div class="ground-glow" aria-hidden="true"></div>
+      </div>
+      <div id="waterEffect" class="water-effect" aria-hidden="true">
+        <div class="water-orb">
+          <span></span>
+        </div>
+        <div id="waterTrail" class="water-trail"></div>
+      </div>
+      <div id="stormEffect" class="storm-effect" aria-hidden="true">
+        <div class="storm-cloud cloud-back"></div>
+        <div class="storm-cloud cloud-front"></div>
+        <div class="lightning lightning-a"></div>
+        <div class="lightning lightning-b"></div>
+        <div id="rain" class="rain"></div>
+      </div>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>
