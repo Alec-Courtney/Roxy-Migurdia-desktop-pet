@@ -43,6 +43,18 @@ body.mode-storm {
   inset: 5.5% 0 0;
 }
 
+body.mode-media .character-stage {
+  inset: auto;
+  left: 0;
+  top: 0;
+  width: var(--normal-width, 100vw);
+  height: var(--normal-height, 100vh);
+}
+
+body.mode-dock #pet {
+  overflow: hidden;
+}
+
 body.mode-storm .character-stage {
   inset: auto;
   z-index: 6;
@@ -70,6 +82,59 @@ body.mode-storm .character-stage {
 
 #pet:hover .sprite {
   filter: drop-shadow(0 7px 5px rgb(20 29 52 / 24%)) brightness(1.025);
+}
+
+body.mode-media .sprite,
+body.mode-media #pet:hover .sprite {
+  filter: none;
+  transform: none;
+  transition: none;
+  transform-origin: center;
+}
+
+body[data-media-tone="right"] {
+  --media-brightness: 1.131;
+  --media-contrast: 0.901;
+}
+
+body[data-media-tone="bottom"] {
+  --media-brightness: 1.086;
+  --media-contrast: 0.963;
+}
+
+body[data-media-tone="braid"] {
+  --media-brightness: 1.1;
+  --media-contrast: 0.915;
+}
+
+body[data-media-tone="coquettish"] {
+  --media-brightness: 1.085;
+  --media-contrast: 0.933;
+}
+
+body[data-media-tone="stretch"] {
+  --media-brightness: 1.082;
+  --media-contrast: 0.939;
+}
+
+body[data-media-tone] .sprite {
+  filter: brightness(var(--media-brightness)) contrast(var(--media-contrast));
+}
+
+body[data-media-tone] #pet:hover .sprite {
+  filter:
+    brightness(var(--media-brightness))
+    contrast(var(--media-contrast))
+    brightness(1.025);
+}
+
+body.mode-media .ground-glow,
+body.mode-media .magic-aura,
+body.mode-media .particles,
+body.mode-media .bubble,
+body.mode-media .water-effect,
+body.mode-media .storm-effect {
+  display: none !important;
 }
 
 .ground-glow {

@@ -4,7 +4,12 @@ node_modules/
 
 # Electron build output (keep only the portable community build in Git)
 release/*
-!release/RoxyDesktopPet-1.0.0-x64.exe
+!release/1.0/
+release/1.0/*
+!release/1.0/RoxyDesktopPet-1.0.0-x64.exe
+!release/2.0/
+release/2.0/*
+!release/2.0/RoxyDesktopPet-2.0-x64.exe
 dist/
 out/
 
@@ -28,6 +33,9 @@ assets/animations/storm/
 references/
 reference-materials/
 source-materials/
+/新版资源/
+/中间产物/
+/其他资源/
 /*.txt
 *.mp4
 *.mkv
@@ -38,8 +46,12 @@ source-materials/
 *.rar
 
 # Local image-processing intermediates
+.qa_new_assets/
+2.0逐帧人工检查/
+assets/animations/new/_assembly-validation.json
 assets/roxy-chroma.png
 assets/roxy-reference-preview.jpg
+assets/roxy-icon-source.ico
 
 # Logs, local configuration and OS/editor noise
 *.log

@@ -1,13 +1,18 @@
 {
   "name": "roxy-desktop-pet",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "一个安静陪伴在桌面的洛琪希桌宠",
   "main": "main.js",
   "author": "",
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "pnpm@11.19.0",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "node --test",
     "build": "electron-builder --win portable"
   },
   "devDependencies": {
@@ -19,24 +24,36 @@
     "productName": "洛琪希桌宠",
     "electronDist": "node_modules/electron/dist",
     "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
     "files": [
       "main.js",
+      "dock-geometry.js",
       "preload.js",
       "renderer/**/*",
-      "assets/roxy-reference.png",
+      "assets/roxy-icon.ico",
       "assets/frames-unified/**/*",
       "assets/animations/**/*",
+      "!assets/animations/braid/**/*",
+      "!assets/animations/bridges/braid/**/*",
+      "!assets/animations/bridges/stretch/**/*",
       "!assets/animations/cast/**/*",
+      "!assets/animations/coquettish/**/*",
+      "!assets/animations/new/_assembly-validation.json",
       "!assets/animations/storm/**/*",
+      "!assets/animations/stretch/**/*",
       "package.json"
     ],
     "directories": {
-      "output": "release"
+      "output": "release/2.0"
     },
     "win": {
       "target": "portable",
-      "icon": "assets/roxy-reference.png",
-      "artifactName": "RoxyDesktopPet-${version}-${arch}.${ext}"
+      "icon": "assets/roxy-icon.ico",
+      "artifactName": "RoxyDesktopPet-2.0-${arch}.${ext}"
     }
   }
 }
