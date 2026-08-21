@@ -7,9 +7,6 @@ release/*
 !release/1.0/
 release/1.0/*
 !release/1.0/RoxyDesktopPet-1.0.0-x64.exe
-!release/2.0/
-release/2.0/*
-!release/2.0/RoxyDesktopPet-2.0-x64.exe
 dist/
 out/
 

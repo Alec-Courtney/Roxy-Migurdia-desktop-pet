@@ -1,2 +1,2 @@
-release/**/*.exe filter=lfs diff=lfs merge=lfs -text
+release/1.0/RoxyDesktopPet-1.0.0-x64.exe filter=lfs diff=lfs merge=lfs -text
 assets/animations/new/*.webp filter=lfs diff=lfs merge=lfs -text

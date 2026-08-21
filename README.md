@@ -26,9 +26,9 @@ ai图片没有办法精准控制每个部位的移动之类的，所以实际的
 | 版本 | 仓库文件路径 | 直接下载 |
 | --- | --- | --- |
 | 1.0 | `release/1.0/RoxyDesktopPet-1.0.0-x64.exe` | [下载 1.0](./release/1.0/RoxyDesktopPet-1.0.0-x64.exe?raw=1) |
-| 2.0 | `release/2.0/RoxyDesktopPet-2.0-x64.exe` | [下载 2.0](./release/2.0/RoxyDesktopPet-2.0-x64.exe?raw=1) |
+| 2.0 | `release/2.0/RoxyDesktopPet-2.0-x64.exe`（本地构建输出） | 调整完成后一次性发布 |
 
-两个可执行文件均通过 Git LFS 保存。克隆仓库后请执行 `git lfs pull` 获取完整文件。
+1.0 可执行文件继续通过 Git LFS 保存，克隆仓库后请执行 `git lfs pull` 获取完整文件。2.0 在定版前不纳入 Git/LFS 跟踪，避免每次重新打包都生成新的大文件对象。
 
 ## 使用说明
 
