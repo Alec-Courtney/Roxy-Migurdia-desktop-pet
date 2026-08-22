@@ -1,10 +1,13 @@
 const pet = document.querySelector('#pet');
 const bubble = document.querySelector('#bubble');
 const sprite = document.querySelector('#sprite');
+const dockPoster = document.querySelector('#dockPoster');
+const frontHandoff = document.querySelector('#frontHandoff');
 const waterTrail = document.querySelector('#waterTrail');
 const rain = document.querySelector('#rain');
 const animationManifest = globalThis.ROXY_ANIMATION_MANIFEST || { clips: {} };
 const newAnimationRoot = '../assets/animations/new/';
+const EDGE_REDOCK_QUIET_MS = 4000;
 
 const petStates = new Set([
   'free',
@@ -166,6 +169,9 @@ let activeDockDrag = null;
 let dockWaveTimer = 0;
 let activeDockWaveLease = 0;
 let dockMotionLease = 0;
+let dockPosterLease = 0;
+let activeDockPosterLease = 0;
+let standingHandoffLease = 0;
 let autoRedockTimer = 0;
 let autoRedockEdge = null;
 let autoRedockLease = 0;
@@ -178,6 +184,8 @@ let dragVelocity = 0;
 let swayLastTime = performance.now();
 let currentLiftIndex = 1;
 let currentLiftBridgeIndex = 1;
+let imageSourceRequestId = 0;
+const imageSourceRequests = new WeakMap();
 
 pet.dataset.state = petState;
 
@@ -209,8 +217,38 @@ function dockVisualOwnsSprite() {
   return petState.startsWith('entering-')
     || petState.startsWith('docked-')
     || petState.startsWith('leaving-')
-    || (petState === 'dragging' && Boolean(dragState?.fromDockEdge))
     || Boolean(activeDockDrag && !activeDockDrag.cancelled);
+}
+
+function absoluteImageSource(source) {
+  return new URL(source, document.baseURI).href;
+}
+
+function cancelImageSourceRequest(image) {
+  const request = imageSourceRequests.get(image);
+  if (request?.cancel) request.cancel();
+}
+
+function setImageSource(image, source) {
+  cancelImageSourceRequest(image);
+  const id = ++imageSourceRequestId;
+  imageSourceRequests.set(image, {
+    id,
+    expected: absoluteImageSource(source),
+    cancel: null
+  });
+  image.src = source;
+  return id;
+}
+
+function clearImageSource(image) {
+  cancelImageSourceRequest(image);
+  imageSourceRequests.set(image, {
+    id: ++imageSourceRequestId,
+    expected: '',
+    cancel: null
+  });
+  image.removeAttribute('src');
 }
 
 function setFrame(name) {
@@ -219,7 +257,7 @@ function setFrame(name) {
   // dock transaction has already acquired the sprite.
   if (name === 'front' && dockVisualOwnsSprite()) return false;
   if (!frames[name]) return false;
-  sprite.src = frames[name];
+  setImageSource(sprite, frames[name]);
   return true;
 }
 
@@ -281,25 +319,55 @@ function preloadFrameSteps(steps) {
   }));
 }
 
-function waitForSpriteSource(source) {
+function waitForImageSource(image, source, timeoutMs = 2400) {
+  cancelImageSourceRequest(image);
+  const id = ++imageSourceRequestId;
+  const expected = absoluteImageSource(source);
   return new Promise((resolve) => {
     let settled = false;
     const finish = (loaded) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timeout);
-      sprite.removeEventListener('load', onLoad);
-      sprite.removeEventListener('error', onError);
+      image.removeEventListener('load', onLoad);
+      image.removeEventListener('error', onError);
+      const active = imageSourceRequests.get(image);
+      if (active?.id === id) {
+        imageSourceRequests.set(image, { id, expected, cancel: null });
+      }
       resolve(loaded);
     };
-    const onLoad = () => finish(true);
-    const onError = () => finish(false);
-    const timeout = window.setTimeout(() => finish(false), 2400);
-    sprite.addEventListener('load', onLoad, { once: true });
-    sprite.addEventListener('error', onError, { once: true });
-    sprite.src = source;
-    if (sprite.complete) queueMicrotask(() => finish(sprite.naturalWidth > 0));
+    const isCurrent = () => imageSourceRequests.get(image)?.id === id;
+    const matchesExpected = () => image.currentSrc === expected;
+    const onLoad = () => {
+      if (!isCurrent()) {
+        finish(false);
+        return;
+      }
+      // An older cached request can still dispatch after a new src assignment.
+      // Ignore it until the element reports the exact URL owned by this request.
+      if (!matchesExpected()) return;
+      finish(image.complete && image.naturalWidth > 0);
+    };
+    const onError = () => {
+      if (!isCurrent() || matchesExpected()) finish(false);
+    };
+    const timeout = window.setTimeout(() => finish(false), timeoutMs);
+    imageSourceRequests.set(image, { id, expected, cancel: () => finish(false) });
+    image.addEventListener('load', onLoad);
+    image.addEventListener('error', onError);
+    image.src = source;
+    if (image.complete) {
+      queueMicrotask(() => {
+        if (!isCurrent() || !matchesExpected()) return;
+        finish(image.naturalWidth > 0);
+      });
+    }
   });
+}
+
+function waitForSpriteSource(source) {
+  return waitForImageSource(sprite, source);
 }
 
 async function waitForSpritePaint(source) {
@@ -315,7 +383,7 @@ async function waitForSpritePaint(source) {
   // previous decoded bitmap until the replacement is ready. Callers that move
   // or crop the native window must not proceed while currentSrc is still that
   // stale image.
-  return sprite.currentSrc === new URL(source, document.baseURI).href;
+  return sprite.currentSrc === absoluteImageSource(source);
 }
 
 async function waitForCompositorPaint() {
@@ -326,41 +394,215 @@ async function waitForCompositorPaint() {
   await Promise.race([painted, wait(100)]);
 }
 
-async function playNewClip(name, { holdLast = false, reset = true } = {}) {
+function dockPosterIsCurrent(lease) {
+  return lease > 0 && activeDockPosterLease === lease;
+}
+
+function releaseDockPoster(lease) {
+  if (!dockPosterIsCurrent(lease)) return false;
+  activeDockPosterLease = 0;
+  document.body.classList.remove('is-dock-poster');
+  clearImageSource(dockPoster);
+  return true;
+}
+
+function retainDockPoster(lease) {
+  if (!dockPosterIsCurrent(lease)) return false;
+  dockPosterLease += 1;
+  activeDockPosterLease = 0;
+  cancelImageSourceRequest(dockPoster);
+  // Keep the last decoded poster and its class visible. A following motion can
+  // replace this same element without ever exposing the sprite underneath.
+  return true;
+}
+
+function takeOverDockPoster() {
+  const wasVisible = document.body.classList.contains('is-dock-poster');
+  dockPosterLease += 1;
+  activeDockPosterLease = 0;
+  cancelImageSourceRequest(dockPoster);
+  return wasVisible;
+}
+
+function cancelDockPoster() {
+  takeOverDockPoster();
+  document.body.classList.remove('is-dock-poster');
+  clearImageSource(dockPoster);
+}
+
+async function stageDockPoster(name, isCurrent = () => true) {
+  const clip = getNewClip(name);
+  const inheritedCover = document.body.classList.contains('is-dock-poster');
+  const lease = ++dockPosterLease;
+  activeDockPosterLease = lease;
+  const abandon = () => (
+    inheritedCover ? retainDockPoster(lease) : releaseDockPoster(lease)
+  );
+  const loaded = await waitForImageSource(
+    dockPoster,
+    clipSource(clip.firstFrame),
+    10000
+  );
+  if (!loaded || !dockPosterIsCurrent(lease) || !isCurrent()) {
+    abandon();
+    return 0;
+  }
+  try {
+    await dockPoster.decode();
+  } catch {
+    if (!dockPoster.complete || dockPoster.naturalWidth <= 0) {
+      abandon();
+      return 0;
+    }
+  }
+  if (!dockPosterIsCurrent(lease) || !isCurrent()) {
+    abandon();
+    return 0;
+  }
+  document.body.classList.add('is-dock-poster');
+  await waitForCompositorPaint();
+  if (!dockPosterIsCurrent(lease) || !isCurrent()) {
+    abandon();
+    return 0;
+  }
+  return lease;
+}
+
+async function stageStandingHandoff(isCurrent = () => true) {
+  const lease = ++standingHandoffLease;
+  try {
+    await frontHandoff.decode();
+  } catch {
+    if (!frontHandoff.complete || frontHandoff.naturalWidth <= 0) return 0;
+  }
+  if (lease !== standingHandoffLease) return 0;
+  if (!isCurrent()) {
+    cancelStandingHandoff(lease);
+    return 0;
+  }
+  document.body.classList.add('is-front-handoff');
+  await waitForCompositorPaint();
+  if (lease !== standingHandoffLease) return 0;
+  if (!isCurrent()) {
+    cancelStandingHandoff(lease);
+    return 0;
+  }
+  // The standing layer is above the dock poster and now owns a presented
+  // frame, so the clip cover can be retired without exposing the sprite below.
+  cancelDockPoster();
+  const painted = await waitForSpritePaint(frames.front);
+  if (lease !== standingHandoffLease) return 0;
+  if (!painted || !isCurrent()) {
+    cancelStandingHandoff(lease);
+    return 0;
+  }
+  return lease;
+}
+
+async function commitStandingHandoff(geometry, lease) {
+  if (
+    lease !== standingHandoffLease
+    || !document.body.classList.contains('is-front-handoff')
+  ) return false;
+  setPetState('free', geometry);
+  setMediaMode(false);
+  await waitForCompositorPaint();
+  if (lease !== standingHandoffLease) return false;
+  return cancelStandingHandoff(lease);
+}
+
+function cancelStandingHandoff(expectedLease) {
+  if (expectedLease !== undefined && expectedLease !== standingHandoffLease) return false;
+  standingHandoffLease += 1;
+  document.body.classList.remove('is-front-handoff');
+  return true;
+}
+
+function takeOverStandingHandoff() {
+  const wasActive = document.body.classList.contains('is-front-handoff');
+  // Invalidate a stage task that may still be decoding or waiting for paint,
+  // while keeping an already visible cover in place for the recovery owner.
+  standingHandoffLease += 1;
+  return { wasActive, lease: standingHandoffLease };
+}
+
+async function recoverStandingVisual(geometry, isCurrent = () => true) {
+  const lease = await stageStandingHandoff(isCurrent);
+  if (lease) return commitStandingHandoff(geometry, lease);
+  if (!isCurrent()) return false;
+
+  // Decoder fallback: prepare the ordinary sprite while the last dock poster
+  // remains above it, then switch layout and covers in the same JS task.
+  const painted = await waitForSpritePaint(frames.front);
+  if (!painted || !isCurrent()) return false;
+  setPetState('free', geometry);
+  setMediaMode(false);
+  cancelDockPoster();
+  const handoff = takeOverStandingHandoff();
+  cancelStandingHandoff(handoff.lease);
+  return true;
+}
+
+async function playNewClip(
+  name,
+  { holdLast = false, reset = true, dockPosterToken = 0 } = {}
+) {
   const clip = getNewClip(name);
   setMediaTone(name);
   const sequence = ++frameSequence;
-  sprite.src = clipSource(clip.firstFrame);
-  const preloadResult = await preloadClip(name);
-  if (sequence !== frameSequence) return false;
-  if (!preloadResult.some(Boolean)) throw new Error(`Could not load animation clip: ${name}`);
-
-  await new Promise((resolve) => window.requestAnimationFrame(resolve));
-  if (sequence !== frameSequence) return false;
-  const startedAt = performance.now();
-  const animatedSource = `${clipSource(clip.asset)}#roxy-play-${sequence}-${Date.now()}`;
-  const loaded = await waitForSpriteSource(animatedSource);
-  if (sequence !== frameSequence) return false;
-  if (!loaded) throw new Error(`Could not display animation clip: ${name}`);
-
-  // Every packaged WebP is loop=1. Let a held clip finish naturally and keep
-  // its final decoded canvas instead of swapping img.src at the endpoint.
-  // That endpoint swap can briefly resurrect an older compositor surface on
-  // transparent Windows windows even when the poster pixels are identical.
-  const settleAfterEnd = holdLast ? 34 : -45;
-  const remaining = Math.max(
-    0,
-    Number(clip.durationMs || 0) + settleAfterEnd - (performance.now() - startedAt)
-  );
-  await wait(remaining);
-  if (sequence !== frameSequence) return false;
-  if (holdLast) {
-    await waitForCompositorPaint();
+  const isDockClip = name.startsWith('dock-');
+  let posterToken = dockPosterToken;
+  try {
+    if (!isDockClip) setImageSource(sprite, clipSource(clip.firstFrame));
+    const preloadResult = await preloadClip(name);
     if (sequence !== frameSequence) return false;
-  } else if (reset) {
-    setFrame('front');
+    if (!preloadResult.some(Boolean)) throw new Error(`Could not load animation clip: ${name}`);
+
+    if (isDockClip && !posterToken) {
+      posterToken = await stageDockPoster(name, () => sequence === frameSequence);
+      if (!posterToken) return false;
+    } else if (isDockClip && !dockPosterIsCurrent(posterToken)) {
+      return false;
+    }
+
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    if (sequence !== frameSequence) return false;
+    const startedAt = performance.now();
+    const animatedSource = `${clipSource(clip.asset)}#roxy-play-${sequence}-${Date.now()}`;
+    const loaded = await waitForSpriteSource(animatedSource);
+    if (sequence !== frameSequence) return false;
+    if (!loaded) throw new Error(`Could not display animation clip: ${name}`);
+    if (isDockClip) {
+      // Keep the decoded poster above the animated image until Chromium has
+      // committed the latter at the exact same geometry.
+      await waitForCompositorPaint();
+      if (sequence !== frameSequence) return false;
+      releaseDockPoster(posterToken);
+      posterToken = 0;
+    }
+
+    // Every packaged WebP is loop=1. Let a held clip finish naturally and keep
+    // its final decoded canvas instead of swapping img.src at the endpoint.
+    const settleAfterEnd = holdLast ? 34 : -45;
+    const remaining = Math.max(
+      0,
+      Number(clip.durationMs || 0) + settleAfterEnd - (performance.now() - startedAt)
+    );
+    await wait(remaining);
+    if (sequence !== frameSequence) return false;
+    if (holdLast) {
+      await waitForCompositorPaint();
+      if (sequence !== frameSequence) return false;
+    } else if (reset) {
+      setFrame('front');
+    }
+    return true;
+  } finally {
+    // A dock poster may only be removed after the animated image has been
+    // confirmed on the compositor path above. On cancellation or load failure,
+    // the caller/recovery owner keeps it as the last known-good visual cover.
+    if (posterToken && !isDockClip) releaseDockPoster(posterToken);
   }
-  return true;
 }
 
 function applyNormalGeometry(geometry) {
@@ -409,10 +651,12 @@ function armTransientStateWatchdog(state, revision = stateRevision) {
   transientStateWatchdogTimer = window.setTimeout(() => {
     transientStateWatchdogTimer = 0;
     if (petState !== state || stateRevision !== revision) return;
-    if (state === 'dragging' && dragState) {
+    const isCapturedPointerDrag = state === 'dragging'
+      || (state.startsWith('leaving-') && Boolean(dragState?.fromDockEdge));
+    if (isCapturedPointerDrag && dragState) {
       try {
-        // A stationary long press is valid for an arbitrary duration. As long
-        // as Chromium still owns capture, keep observing instead of aborting it.
+        // Free drags and dock-exit drags may both stay pressed indefinitely.
+        // As long as Chromium owns capture, keep observing instead of aborting.
         if (pet.hasPointerCapture(dragState.pointerId)) {
           armTransientStateWatchdog(state, revision);
           return;
@@ -510,13 +754,15 @@ function cancelDockMotion() {
   activeDockWaveLease = 0;
   dockMotionLease += 1;
   frameSequence += 1;
+  takeOverDockPoster();
 }
 
 function showDockPose(edge) {
   try {
     setMediaTone(`dock-${edge}-enter`);
     const clip = getNewClip(`dock-${edge}-enter`);
-    sprite.src = clipSource(clip.lastFrame);
+    setImageSource(sprite, clipSource(clip.lastFrame));
+    cancelDockPoster();
   } catch (error) {
     console.error(error);
     setFrame('front');
@@ -786,6 +1032,7 @@ function scheduleDockWave(edge) {
 
 function recoverDockToFree(context) {
   if (dockRecoveryPromise) return dockRecoveryPromise;
+  takeOverStandingHandoff();
   const abandonedDrag = dragState;
   const abandonedDockDrag = activeDockDrag;
   if (abandonedDrag) abandonedDrag.cancelled = true;
@@ -794,10 +1041,10 @@ function recoverDockToFree(context) {
   cancelAutoRedock();
   cancelDockMotion();
   cancelInteractionLock();
+  const recoveryLockLease = acquireInteractionLock();
   if (abandonedDrag?.longPressTimer) window.clearTimeout(abandonedDrag.longPressTimer);
   dragState = null;
   activeDockDrag = null;
-  activeDockEdge = null;
   document.body.classList.remove('is-dragging', 'is-lifted', 'mode-water', 'mode-storm');
   if (abandonedDrag) {
     try {
@@ -813,10 +1060,6 @@ function recoverDockToFree(context) {
       // Pointer capture may already have been released by the browser or OS.
     }
   }
-  setPetState('free');
-  setMediaMode(false);
-  setFrame('front');
-
   dockRecoveryPromise = (async () => {
     let geometry = null;
     try {
@@ -825,8 +1068,15 @@ function recoverDockToFree(context) {
     } catch (error) {
       console.error(`Could not recover the dock state (${context}):`, error);
     }
-    return Boolean(geometry);
+    if (recoveryLockLease !== interactionLease) return false;
+    const settled = await recoverStandingVisual(
+      geometry,
+      () => recoveryLockLease === interactionLease
+    );
+    if (settled) activeDockEdge = null;
+    return Boolean(geometry && settled);
   })().finally(() => {
+    releaseInteractionLock(recoveryLockLease);
     dockRecoveryPromise = null;
   });
   return dockRecoveryPromise;
@@ -839,30 +1089,38 @@ async function enterDock(edge, geometry) {
   activeDockEdge = edge;
   const clipName = `dock-${edge}-enter`;
   const clip = getNewClip(clipName);
+  // `is-dock-poster` atomically applies the same full-canvas layout as
+  // mode-media. Seed its dimensions before the decoded poster becomes visible;
+  // the free-state sprite remains untouched and hidden underneath the poster.
+  applyNormalGeometry(geometry);
   setMediaTone(clipName);
-  const firstPoster = clipSource(clip.firstFrame);
   const motionLease = ++dockMotionLease;
   const lockLease = acquireInteractionLock();
   let revision = stateRevision;
   let rendererEnterStarted = false;
   let dockedGeometry = null;
   let mainEnterStarted = false;
+  let clipPosterToken = 0;
   try {
-    // Keep the normal layout in place while the complete clip is cached and
-    // its first poster is decoded on the real sprite. Merely assigning src is
-    // not enough: currentSrc can remain turn-front.png for several compositor
-    // frames. Only acquire the entering layout after the poster is actually
-    // painted, so a native move can never expose the stale standing bitmap.
+    // Keep the normal layout in place while the complete clip is cached. Its
+    // first frame is presented on an independent layer, never by replacing the
+    // currently visible sprite before the native shape/position transaction.
     const preloadResult = await preloadClip(clipName);
     if (!preloadResult[1]) throw new Error(`Could not preload ${edge} dock entry poster`);
-    const posterReady = await waitForSpritePaint(firstPoster);
-    if (!posterReady) throw new Error(`Could not paint ${edge} dock entry poster`);
+    clipPosterToken = await stageDockPoster(clipName, () => (
+      revision === stateRevision
+      && motionLease === dockMotionLease
+      && petState === 'free'
+      && lockLease === interactionLease
+    ));
+    if (!clipPosterToken) throw new Error(`Could not present ${edge} dock entry poster`);
     if (
       revision !== stateRevision ||
       motionLease !== dockMotionLease ||
       petState !== 'free' ||
       lockLease !== interactionLease
     ) {
+      releaseDockPoster(clipPosterToken);
       releaseInteractionLock(lockLease);
       return false;
     }
@@ -887,12 +1145,18 @@ async function enterDock(edge, geometry) {
       petState !== `entering-${edge}` ||
       lockLease !== interactionLease
     ) {
+      retainDockPoster(clipPosterToken);
       releaseInteractionLock(lockLease);
       return false;
     }
     armTransientStateWatchdog(`entering-${edge}`, revision);
-    await playNewClip(`dock-${edge}-enter`, { holdLast: true });
+    await playNewClip(`dock-${edge}-enter`, {
+      holdLast: true,
+      dockPosterToken: clipPosterToken
+    });
+    clipPosterToken = 0;
   } catch (error) {
+    if (clipPosterToken) retainDockPoster(clipPosterToken);
     console.error(`Dock ${edge} entry failed:`, error);
     if (!mainEnterStarted) {
       let restoredGeometry = geometry;
@@ -905,13 +1169,16 @@ async function enterDock(edge, geometry) {
         revision === stateRevision &&
         motionLease === dockMotionLease &&
         petState === (rendererEnterStarted ? `entering-${edge}` : 'free') &&
-        releaseInteractionLock(lockLease)
+        lockLease === interactionLease
       ) {
         activeDockEdge = null;
         if (rendererEnterStarted) setPetState('free', restoredGeometry);
         else applyNormalGeometry(restoredGeometry);
         setMediaMode(false);
         setFrame('front');
+        await waitForSpritePaint(frames.front);
+        cancelDockPoster();
+        releaseInteractionLock(lockLease);
       }
       return false;
     }
@@ -948,7 +1215,10 @@ async function enterDock(edge, geometry) {
   return true;
 }
 
-function scheduleAutoRedock(edge, { minDelay = 10000, maxDelay = 16000 } = {}) {
+function scheduleAutoRedock(
+  edge,
+  { minDelay = EDGE_REDOCK_QUIET_MS, maxDelay = EDGE_REDOCK_QUIET_MS } = {}
+) {
   const lower = Math.max(0, Number(minDelay) || 0);
   const upper = Math.max(lower, Number(maxDelay) || lower);
   cancelAutoRedock();
@@ -992,35 +1262,43 @@ function scheduleAutoRedock(edge, { minDelay = 10000, maxDelay = 16000 } = {}) {
 
 async function leaveDock(edge) {
   cancelDockMotion();
-  setMediaTone(`dock-${edge}-exit`);
-  const clip = getNewClip(`dock-${edge}-exit`);
-  const firstPoster = clipSource(clip.firstFrame);
-  // Keep the held dock pose visible while the full transparent window expands.
-  // Painting the exit poster first prevents a cached standing texture flashing.
-  sprite.src = firstPoster;
+  const clipName = `dock-${edge}-exit`;
+  setMediaTone(clipName);
+  const clip = getNewClip(clipName);
   setPetState(`leaving-${edge}`);
   setMediaMode(true);
   const revision = stateRevision;
   const motionLease = ++dockMotionLease;
   const lockLease = acquireInteractionLock();
   let geometry = null;
+  let clipPosterToken = 0;
   try {
-    const posterReady = await waitForSpritePaint(firstPoster);
-    if (!posterReady) throw new Error(`Could not paint ${edge} dock exit poster`);
+    await preloadClip(clipName);
+    clipPosterToken = await stageDockPoster(clipName, () => (
+      revision === stateRevision
+      && motionLease === dockMotionLease
+      && petState === `leaving-${edge}`
+      && lockLease === interactionLease
+    ));
+    if (!clipPosterToken) throw new Error(`Could not present ${edge} dock exit poster`);
     if (
       revision !== stateRevision ||
       motionLease !== dockMotionLease ||
       petState !== `leaving-${edge}` ||
       lockLease !== interactionLease
     ) {
+      retainDockPoster(clipPosterToken);
       releaseInteractionLock(lockLease);
       return false;
     }
     armTransientStateWatchdog(`leaving-${edge}`, revision);
-    await preloadClip(`dock-${edge}-exit`);
-    await window.roxy.startDockExit(edge, Math.max(180, clip.durationMs - 45));
-    // Let the expanded native window commit while the exact exit poster still
-    // owns every newly exposed pixel, then begin animated playback.
+    const started = await window.roxy.startDockExit(
+      edge,
+      Math.max(180, clip.durationMs - 45)
+    );
+    if (!started) throw new Error(`Main process rejected ${edge} dock exit`);
+    // Let the position/shape transaction commit while the exact exit poster
+    // still owns the visible pixels, then begin animated playback.
     await waitForCompositorPaint();
     if (
       revision !== stateRevision ||
@@ -1028,12 +1306,18 @@ async function leaveDock(edge) {
       petState !== `leaving-${edge}` ||
       lockLease !== interactionLease
     ) {
+      retainDockPoster(clipPosterToken);
       releaseInteractionLock(lockLease);
       return false;
     }
     armTransientStateWatchdog(`leaving-${edge}`, revision);
-    await playNewClip(`dock-${edge}-exit`, { holdLast: true });
+    await playNewClip(clipName, {
+      holdLast: true,
+      dockPosterToken: clipPosterToken
+    });
+    clipPosterToken = 0;
   } catch (error) {
+    if (clipPosterToken) retainDockPoster(clipPosterToken);
     console.error(`Dock ${edge} exit failed:`, error);
   }
 
@@ -1055,7 +1339,7 @@ async function leaveDock(edge) {
     revision !== stateRevision ||
     motionLease !== dockMotionLease ||
     petState !== `leaving-${edge}` ||
-    !releaseInteractionLock(lockLease)
+    lockLease !== interactionLease
   ) return false;
 
   if (!geometry) {
@@ -1063,10 +1347,36 @@ async function leaveDock(edge) {
     return false;
   }
 
+  const standingLease = await stageStandingHandoff(() => (
+    revision === stateRevision
+    && motionLease === dockMotionLease
+    && petState === `leaving-${edge}`
+    && lockLease === interactionLease
+  ));
+  if (!standingLease) {
+    await recoverDockToFree(`${edge} standing handoff`);
+    return false;
+  }
+  if (
+    revision !== stateRevision ||
+    motionLease !== dockMotionLease ||
+    petState !== `leaving-${edge}` ||
+    lockLease !== interactionLease
+  ) {
+    cancelStandingHandoff(standingLease);
+    return false;
+  }
+
   activeDockEdge = null;
-  setPetState('free', geometry);
-  setMediaMode(false);
-  setFrame('front');
+  const committed = await commitStandingHandoff(geometry, standingLease);
+  if (!committed) {
+    if (lockLease === interactionLease) {
+      releaseInteractionLock(lockLease);
+      await recoverDockToFree(`${edge} standing commit`);
+    }
+    return false;
+  }
+  if (!releaseInteractionLock(lockLease)) return false;
   scheduleAutoRedock(edge);
   return true;
 }
@@ -1077,7 +1387,7 @@ async function settleDragResult(result) {
   setMediaMode(false);
   const pendingDockEdge = result?.pendingDockEdge;
   if (pendingDockEdge === 'right' || pendingDockEdge === 'bottom') {
-    scheduleAutoRedock(pendingDockEdge, { minDelay: 2000, maxDelay: 2000 });
+    scheduleAutoRedock(pendingDockEdge);
     return true;
   }
   return false;
@@ -1085,13 +1395,21 @@ async function settleDragResult(result) {
 
 async function finishDraggedDockExit(finishedDrag) {
   const edge = finishedDrag.fromDockEdge;
-  setPetState(`leaving-${edge}`);
+  if (petState !== `leaving-${edge}`) setPetState(`leaving-${edge}`);
   setMediaMode(true);
   const revision = stateRevision;
   const lockLease = acquireInteractionLock();
+  let standingLease = 0;
   try {
     await finishedDrag.exitPromise;
     await waitForCompositorPaint();
+    if (revision === stateRevision && petState === `leaving-${edge}`) {
+      standingLease = await stageStandingHandoff(() => (
+        revision === stateRevision
+        && petState === `leaving-${edge}`
+        && lockLease === interactionLease
+      ));
+    }
   } catch (error) {
     console.error(`Dock ${edge} dragged exit failed:`, error);
   } finally {
@@ -1099,17 +1417,33 @@ async function finishDraggedDockExit(finishedDrag) {
     if (
       revision === stateRevision &&
       petState === `leaving-${edge}` &&
-      releaseInteractionLock(lockLease)
+      standingLease &&
+      lockLease === interactionLease
     ) {
       activeDockEdge = null;
-      setPetState('free');
-      setMediaMode(false);
-      setFrame('front');
+      const committed = await commitStandingHandoff(undefined, standingLease);
+      if (committed) {
+        releaseInteractionLock(lockLease);
+      } else if (lockLease === interactionLease) {
+        releaseInteractionLock(lockLease);
+        await recoverDockToFree(`${edge} dragged standing commit`);
+      }
+    } else if (
+      revision === stateRevision
+      && petState === `leaving-${edge}`
+      && lockLease === interactionLease
+    ) {
+      // A reset/recovery may have taken ownership of an already visible cover
+      // while this async exit was waiting. Only the original owner may clear it.
+      if (standingLease) cancelStandingHandoff(standingLease);
+      releaseInteractionLock(lockLease);
+      await recoverDockToFree(`${edge} dragged standing handoff`);
     }
   }
 }
 
 function resetDock(geometry) {
+  takeOverStandingHandoff();
   clearPendingTap({ clearTimestamp: true });
   cancelAutoRedock();
   cancelDockMotion();
@@ -1119,11 +1453,13 @@ function resetDock(geometry) {
   if (activeDockDrag) activeDockDrag.cancelled = true;
   dragState = null;
   activeDockDrag = null;
-  activeDockEdge = null;
   document.body.classList.remove('is-dragging', 'is-lifted', 'mode-water', 'mode-storm');
-  setPetState('free', geometry);
-  setMediaMode(false);
-  setFrame('front');
+  const lockLease = acquireInteractionLock();
+  void recoverStandingVisual(geometry, () => lockLease === interactionLease)
+    .then((settled) => {
+      if (settled) activeDockEdge = null;
+    })
+    .finally(() => releaseInteractionLock(lockLease));
 }
 
 function queueTapAction() {
@@ -1216,18 +1552,34 @@ function startDockWindowDrag(pointerId) {
     && activeDockDrag === currentDrag
     && (dragState === currentDrag || currentDrag.released)
   );
-  setMediaTone(`dock-${edge}-exit`);
-  const exitClip = getNewClip(`dock-${edge}-exit`);
-  currentDrag.startPromise = waitForSpritePaint(clipSource(exitClip.firstFrame))
-    .then((posterReady) => {
-      if (!posterReady) throw new Error(`Could not paint ${edge} dock drag-exit poster`);
-      if (!isLiveDockDrag()) return null;
+  const clipName = `dock-${edge}-exit`;
+  setMediaTone(clipName);
+  currentDrag.dockPosterToken = 0;
+  currentDrag.startPromise = preloadClip(clipName)
+    .then(() => stageDockPoster(clipName, isLiveDockDrag))
+    .then((posterToken) => {
+      if (!posterToken) throw new Error(`Could not present ${edge} dock drag-exit poster`);
+      currentDrag.dockPosterToken = posterToken;
+      if (!isLiveDockDrag()) {
+        retainDockPoster(posterToken);
+        currentDrag.dockPosterToken = 0;
+        return null;
+      }
       return window.roxy.startDockDrag(edge, currentDrag.screenX, currentDrag.screenY);
     })
     .then(async (dragSize) => {
       if (!isLiveDockDrag()) {
+        retainDockPoster(currentDrag.dockPosterToken);
+        currentDrag.dockPosterToken = 0;
         currentDrag.startFailed = true;
         if (dragSize) await recoverDockToFree(`${edge} dock drag cancelled during startup`);
+        return null;
+      }
+      if (!dragSize) {
+        retainDockPoster(currentDrag.dockPosterToken);
+        currentDrag.dockPosterToken = 0;
+        currentDrag.ready = false;
+        currentDrag.startFailed = true;
         return null;
       }
       currentDrag.ready = Boolean(dragSize);
@@ -1241,6 +1593,8 @@ function startDockWindowDrag(pointerId) {
       return dragSize;
     })
     .catch((error) => {
+      retainDockPoster(currentDrag.dockPosterToken);
+      currentDrag.dockPosterToken = 0;
       currentDrag.startFailed = true;
       if (!currentDrag.cancelled) {
         console.error(`Could not start dragging from the ${edge} dock:`, error);
@@ -1249,12 +1603,27 @@ function startDockWindowDrag(pointerId) {
     });
   currentDrag.exitPromise = currentDrag.startPromise
     .then(async (dragSize) => {
-      if (!dragSize || !isLiveDockDrag()) return false;
+      if (!dragSize || !isLiveDockDrag()) {
+        retainDockPoster(currentDrag.dockPosterToken);
+        currentDrag.dockPosterToken = 0;
+        return false;
+      }
       await waitForCompositorPaint();
-      if (!isLiveDockDrag()) return false;
-      return playNewClip(`dock-${edge}-exit`, { holdLast: true });
+      if (!isLiveDockDrag()) {
+        retainDockPoster(currentDrag.dockPosterToken);
+        currentDrag.dockPosterToken = 0;
+        return false;
+      }
+      const played = await playNewClip(clipName, {
+        holdLast: true,
+        dockPosterToken: currentDrag.dockPosterToken
+      });
+      currentDrag.dockPosterToken = 0;
+      return played;
     })
     .catch((error) => {
+      retainDockPoster(currentDrag.dockPosterToken);
+      currentDrag.dockPosterToken = 0;
       if (dragState?.pointerId === pointerId) {
         console.error(`Dock ${edge} drag-exit animation failed:`, error);
       }
@@ -1279,7 +1648,6 @@ async function pointerDown(event) {
 
   if (dockEdge) {
     cancelDockMotion();
-    showDockPose(dockEdge);
   } else {
     frameSequence += 1;
     setMediaMode(false);
@@ -1307,7 +1675,7 @@ async function pointerDown(event) {
     longPressTimer: 0
   };
   activeDockDrag = dockEdge ? dragState : null;
-  setPetState('dragging');
+  if (!dockEdge) setPetState('dragging');
   try {
     pet.setPointerCapture(event.pointerId);
   } catch (error) {
@@ -1350,7 +1718,6 @@ async function pointerDown(event) {
 function pointerMove(event) {
   if (!dragState || dragState.pointerId !== event.pointerId) return;
   notePointerActivity();
-  armTransientStateWatchdog('dragging', stateRevision);
   const now = performance.now();
   const elapsed = Math.max(1, now - dragState.lastTime);
   const velocity = ((event.screenX - dragState.lastX) / elapsed) * 1000;
@@ -1369,9 +1736,13 @@ function pointerMove(event) {
     // Movement means the old edge/return target is no longer intentional.
     cancelAutoRedock();
     if (dragState.fromDockEdge) {
+      // A docked pet has its own exit state. Never route right/bottom drags
+      // through the standing-only lift/drag state or its sprite sequence.
+      setPetState(`leaving-${dragState.fromDockEdge}`);
       startDockWindowDrag(event.pointerId);
     }
   }
+  if (petState === 'dragging') armTransientStateWatchdog('dragging', stateRevision);
   if (dragState.moved && dragState.ready) window.roxy.moveDrag(event.screenX, event.screenY);
 }
 
@@ -1384,19 +1755,18 @@ async function pointerUp(event) {
   const wasLifted = finishedDrag.lifted;
   const wasCancelled = event.type === 'pointercancel';
   const fromDockEdge = finishedDrag.fromDockEdge;
+  const expectedDragState = fromDockEdge ? `leaving-${fromDockEdge}` : 'dragging';
   const dragRevision = stateRevision;
   finishedDrag.released = true;
   dragState = null;
   document.body.classList.remove('is-dragging');
-  window.roxy.setDragLift(false, event.screenX, event.screenY);
+  if (!fromDockEdge) window.roxy.setDragLift(false, event.screenX, event.screenY);
 
   if (fromDockEdge && !wasMoved && wasCancelled) {
     finishedDrag.cancelled = true;
     if (activeDockDrag === finishedDrag) activeDockDrag = null;
     cancelDockMotion();
     activeDockEdge = fromDockEdge;
-    setPetState(`docked-${fromDockEdge}`);
-    showDockPose(fromDockEdge);
     scheduleDockWave(fromDockEdge);
     return;
   }
@@ -1413,7 +1783,7 @@ async function pointerUp(event) {
   } catch {
     finishedDrag.startFailed = true;
   }
-  if (petState !== 'dragging' || stateRevision !== dragRevision) return;
+  if (petState !== expectedDragState || stateRevision !== dragRevision) return;
   if (finishedDrag.startFailed) {
     if (fromDockEdge) {
       await recoverDockToFree(`${fromDockEdge} drag start`);
@@ -1436,7 +1806,7 @@ async function pointerUp(event) {
     endDragFailed = true;
     console.error('Could not finish dragging:', error);
   }
-  if (petState !== 'dragging' || stateRevision !== dragRevision) return;
+  if (petState !== expectedDragState || stateRevision !== dragRevision) return;
   if (endDragFailed) {
     await recoverDockToFree('drag end IPC failed');
     return;
@@ -1488,9 +1858,9 @@ pet.addEventListener('pointercancel', pointerUp);
 pet.addEventListener('lostpointercapture', (event) => {
   // Normal pointerup clears dragState before Chromium releases capture, so this
   // only handles an OS/window-driven loss that otherwise leaves dragging stuck.
-  // Expanding a cropped dock window can itself make Windows/Chromium release
-  // capture. Treat that as a cancelled release of the dock drag so its own exit
-  // clip can finish; never fall through to the legacy lift/release sequence.
+  // A native dock position/shape change can itself make Windows/Chromium
+  // release capture. Treat that as a cancelled release of the dock drag so its
+  // own exit clip can finish; never use the standing lift/release sequence.
   if (
     dragState?.pointerId === event.pointerId
     && dragState.fromDockEdge

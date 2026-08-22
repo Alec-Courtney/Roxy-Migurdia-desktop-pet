@@ -43,7 +43,8 @@ body.mode-storm {
   inset: 5.5% 0 0;
 }
 
-body.mode-media .character-stage {
+body.mode-media .character-stage,
+body.is-dock-poster .character-stage {
   inset: auto;
   left: 0;
   top: 0;
@@ -80,12 +81,62 @@ body.mode-storm .character-stage {
   will-change: transform;
 }
 
+.sprite-dock-poster {
+  z-index: 3;
+  opacity: 0;
+  visibility: hidden;
+  transition: none !important;
+}
+
+body.is-dock-poster .sprite-dock-poster {
+  opacity: 1;
+  visibility: visible;
+}
+
+body.is-dock-poster #sprite {
+  visibility: hidden;
+}
+
+.sprite-handoff {
+  z-index: 4;
+  opacity: 0;
+  filter: drop-shadow(0 6px 4px rgb(20 29 52 / 18%)) !important;
+  transition: none !important;
+  transform: none !important;
+}
+
+body.is-front-handoff #sprite {
+  visibility: hidden;
+  filter: drop-shadow(0 6px 4px rgb(20 29 52 / 18%)) !important;
+  transition: none !important;
+  transform: none !important;
+}
+
+body.is-front-handoff .sprite-handoff {
+  opacity: 1;
+}
+
+body.is-front-handoff .sprite-dock-poster {
+  opacity: 0;
+  visibility: hidden;
+}
+
+body.is-front-handoff #pet:hover .sprite-handoff {
+  filter: drop-shadow(0 7px 5px rgb(20 29 52 / 24%)) brightness(1.025) !important;
+}
+
+body.is-front-handoff #pet:hover #sprite {
+  filter: drop-shadow(0 7px 5px rgb(20 29 52 / 24%)) brightness(1.025) !important;
+}
+
 #pet:hover .sprite {
   filter: drop-shadow(0 7px 5px rgb(20 29 52 / 24%)) brightness(1.025);
 }
 
 body.mode-media .sprite,
-body.mode-media #pet:hover .sprite {
+body.mode-media #pet:hover .sprite,
+body.is-dock-poster .sprite,
+body.is-dock-poster #pet:hover .sprite {
   filter: none;
   transform: none;
   transition: none;
@@ -133,7 +184,13 @@ body.mode-media .magic-aura,
 body.mode-media .particles,
 body.mode-media .bubble,
 body.mode-media .water-effect,
-body.mode-media .storm-effect {
+body.mode-media .storm-effect,
+body.is-dock-poster .ground-glow,
+body.is-dock-poster .magic-aura,
+body.is-dock-poster .particles,
+body.is-dock-poster .bubble,
+body.is-dock-poster .water-effect,
+body.is-dock-poster .storm-effect {
   display: none !important;
 }
 

@@ -26,6 +26,14 @@ const DOCK_FOREGROUND_BEYOND_RATIO = {
   right: 0.025,
   bottom: 0.032
 };
+const DOCKED_SHAPE_PADDING = 4;
+// Canonical-source alpha unions for each held dock pose plus every idle-wave
+// frame. These are deliberately asset-space rectangles: computeDockLayout maps
+// them through the same contain transform as the renderer and adds DIP padding.
+const DOCKED_MEDIA_BOUNDS = {
+  right: { x: 205, y: 141, width: 202, height: 441 },
+  bottom: { x: 98, y: 523, width: 273, height: 196 }
+};
 
 function dockMediaFromManifest(edge) {
   const clip = animationManifest.clips?.[`dock-${edge}-enter`];
@@ -35,7 +43,8 @@ function dockMediaFromManifest(edge) {
   return {
     width: clip.width,
     height: clip.height,
-    lineRatio: clip.referenceLine.ratio
+    lineRatio: clip.referenceLine.ratio,
+    dockedMediaBounds: DOCKED_MEDIA_BOUNDS[edge]
   };
 }
 
@@ -154,47 +163,128 @@ function dockGeometryResult(layout, edge) {
   };
 }
 
-function cancelDockWindowAnimation({ finish = false } = {}) {
+function setPetWindowShape(rects) {
+  if (!petWindow || petWindow.isDestroyed()) return;
+  if (typeof petWindow.setShape === 'function') petWindow.setShape(rects);
+}
+
+function movePetWindowTo(bounds) {
+  if (!petWindow || petWindow.isDestroyed() || !bounds) return;
+  // PointerEvent.screenX/screenY can be fractional at non-integer Windows DPI
+  // scales (for example 125%). Normalize the complete canonical rectangle at
+  // the single native boundary. Electron 43.2 can grow a frameless window on
+  // every setPosition() call at 125%, so position-only movement deliberately
+  // uses setBounds with width/height from WINDOW_SIZES (never getBounds()).
+  const x = Math.round(bounds.x);
+  const y = Math.round(bounds.y);
+  const width = Math.round(bounds.width);
+  const height = Math.round(bounds.height);
+  if (!Number.isFinite(x) || !Number.isFinite(y)
+    || !Number.isFinite(width) || !Number.isFinite(height)
+    || width <= 0 || height <= 0) return;
+  const current = petWindow.getBounds();
+  const sizeDrifted = Math.abs(current.width - width) > 2
+    || Math.abs(current.height - height) > 2;
+  if (current.x !== x || current.y !== y || sizeDrifted) {
+    petWindow.setBounds({ x, y, width, height }, false);
+  }
+}
+
+function matchesPetWindowSize(bounds, size) {
+  // Fractional Windows scaling can round the native DIP rectangle by one or
+  // occasionally two units after a move. Treat that as the same surface size;
+  // forcing it back with setBounds would recreate the resize flash we avoid.
+  return Math.abs(bounds.width - size.width) <= 2
+    && Math.abs(bounds.height - size.height) <= 2;
+}
+
+function placeDockCanvas(layout, { docked = false } = {}) {
+  const shape = docked ? layout?.dockedShape : layout?.dockShape;
+  if (!layout?.dockCanvasBounds || !shape) return false;
+
+  // Entry needs the complete transition crop. Once held, a padded alpha-union
+  // crop removes the otherwise clickable transparent area without resizing the
+  // fixed native canvas or changing media registration.
+  setPetWindowShape([shape]);
+  movePetWindowTo(layout.dockCanvasBounds);
+  return true;
+}
+
+function placeNormalCanvas(bounds, { allowResize = false } = {}) {
+  if (!petWindow || petWindow.isDestroyed() || !bounds) return false;
+  const current = petWindow.getBounds();
+  if (!matchesPetWindowSize(current, bounds)) {
+    if (allowResize) {
+      petWindow.setBounds(bounds, false);
+    } else {
+      // Dock transitions deliberately preserve the configured native surface.
+      // The fixed-size move is performed behind the already-painted poster or
+      // handoff, so a previously drifted process can recover without exposing
+      // a standing frame.
+      movePetWindowTo(bounds);
+    }
+  } else {
+    // A canonical same-size setBounds is a move, not a semantic resize.
+    movePetWindowTo(bounds);
+  }
+  // Position first: while these two synchronous native calls settle, the old
+  // crop cannot expose the hidden side of the wall at the screen edge.
+  setPetWindowShape([]);
+  return true;
+}
+
+function cancelDockWindowAnimation() {
   if (!dockWindowAnimation) return;
   clearInterval(dockWindowAnimation.timer);
-  if (finish && petWindow && !petWindow.isDestroyed()) {
-    petWindow.setBounds(dockWindowAnimation.targetBounds, false);
-  }
   dockWindowAnimation = null;
 }
 
-function dockFreeBounds() {
-  if (!petWindow || !dockState) return null;
+function dockExitBounds(edge, sourceBounds = petWindow?.getBounds()) {
+  if (!petWindow || !dockState || dockState.edge !== edge || !sourceBounds) return null;
   const configuredSize = WINDOW_SIZES[settings.size] || WINDOW_SIZES.medium;
-  const display = screen.getDisplayNearestPoint({
-    x: dockState.freeBounds.x + Math.round(configuredSize.width / 2),
-    y: dockState.freeBounds.y + Math.round(configuredSize.height / 2)
-  });
-  return clampFreeBounds(
-    { ...dockState.freeBounds, ...configuredSize },
-    display.workArea
-  );
+  const expandedBounds = { ...sourceBounds, ...configuredSize };
+  const { workArea } = displayForBounds(expandedBounds);
+  const workRight = workArea.x + workArea.width;
+  const workBottom = workArea.y + workArea.height;
+  const targetBounds = { ...expandedBounds };
+
+  // Choose the final free origin before playback. A transparent BrowserWindow
+  // must not be resized or nudged after the final decoded animation frame: on
+  // Windows that can expose an older backing surface for a single frame.
+  if (edge === 'right') {
+    const characterRight = targetBounds.x + configuredSize.width * (430 / 500);
+    const overflow = Math.ceil(characterRight - (workRight - 2));
+    if (overflow > 0) targetBounds.x -= overflow;
+    targetBounds.y = Math.min(
+      Math.max(targetBounds.y, workArea.y),
+      workBottom - configuredSize.height
+    );
+  } else {
+    const characterBottom = targetBounds.y
+      + configuredSize.height
+      - configuredSize.width * (20 / 500);
+    const overflow = Math.ceil(characterBottom - (workBottom - 2));
+    if (overflow > 0) targetBounds.y -= overflow;
+    targetBounds.x = Math.min(
+      Math.max(targetBounds.x, workArea.x),
+      workRight - configuredSize.width
+    );
+  }
+  return targetBounds;
 }
 
 function startDockWindowAnimation(edge, phase, targetPosition, requestedDuration) {
   if (!petWindow || !dockState || dockState.edge !== edge) return null;
   cancelDockWindowAnimation();
   const configuredSize = WINDOW_SIZES[settings.size] || WINDOW_SIZES.medium;
-  const currentBounds = petWindow.getBounds();
-  // The clips already contain the complete travel. Crop an entering window
-  // once, before playback, after the renderer has painted the correct first
-  // poster. Resizing at the end can make Windows briefly reuse the old idle
-  // backing surface even though Chromium's currentSrc is already correct.
-  // Exit still expands once at its beginning so the whole return clip fits.
-  const targetBounds = phase === 'entering-dock'
-    ? { ...targetPosition }
-    : {
-        x: currentBounds.x,
-        y: currentBounds.y,
-        width: configuredSize.width,
-        height: configuredSize.height
-      };
-  petWindow.setBounds(targetBounds, false);
+  // The clips already contain the complete travel. Keep the normal native
+  // canvas size and reproduce the former cropped window with a native shape;
+  // this preserves the video's stabilized wall coordinate without a resize.
+  const targetBounds = { ...targetPosition, ...configuredSize };
+  const placed = phase === 'entering-dock'
+    ? placeDockCanvas(dockState.layout)
+    : placeNormalCanvas(targetBounds);
+  if (!placed) return null;
   dockWindowAnimation = {
     edge,
     phase,
@@ -238,7 +328,9 @@ function prepareDock(edge, sourceBounds = petWindow?.getBounds()) {
     lineRatio: media.lineRatio,
     overlap: dockOverlap(edge, configuredSize.width),
     mediaAlignX: 0.5,
-    mediaAlignY: 1
+    mediaAlignY: 1,
+    dockedMediaBounds: media.dockedMediaBounds,
+    dockedShapePadding: DOCKED_SHAPE_PADDING
   });
 
   dockState = { edge, freeBounds, displayId, layout, phase: 'prepared' };
@@ -252,69 +344,63 @@ function prepareDock(edge, sourceBounds = petWindow?.getBounds()) {
 function startDockEnterAnimation(edge, requestedDuration) {
   if (!petWindow || !dockState || dockState.edge !== edge) return null;
   if (dockState.phase !== 'prepared') return null;
-  const { dockBounds } = dockState.layout;
+  const { dockCanvasBounds } = dockState.layout;
   dockState.phase = 'entering';
-  return startDockWindowAnimation(edge, 'entering-dock', dockBounds, requestedDuration);
+  const started = startDockWindowAnimation(
+    edge,
+    'entering-dock',
+    dockCanvasBounds,
+    requestedDuration
+  );
+  if (!started) dockState.phase = 'prepared';
+  return started;
 }
 
 function finishDockEnter(edge) {
   if (!petWindow || !dockState || dockState.edge !== edge) return null;
   if (dockState.phase !== 'entering') return null;
-  // The native window has been at dockBounds since playback began. Do not
-  // issue a redundant end-of-clip resize: it can flash a stale idle surface.
+  // Shrink only the native shape to the padded held/wave alpha union. This does
+  // not move or resize the BrowserWindow, and the pixels being removed are
+  // transparent in both the held frame and every idle-wave frame.
   cancelDockWindowAnimation();
   dockState.phase = 'docked';
+  setPetWindowShape([dockState.layout.dockedShape]);
   return dockGeometryResult(dockState.layout, edge);
 }
 
 function startDockExitAnimation(edge, requestedDuration) {
   if (!petWindow || !dockState || dockState.edge !== edge) return null;
   if (dockState.phase !== 'docked') return null;
-  const targetBounds = dockFreeBounds();
+  const targetBounds = dockExitBounds(edge);
   if (!targetBounds) return null;
   dockState.phase = 'leaving';
-  return startDockWindowAnimation(edge, 'leaving-dock', targetBounds, requestedDuration);
+  const started = startDockWindowAnimation(edge, 'leaving-dock', targetBounds, requestedDuration);
+  if (!started) dockState.phase = 'docked';
+  return started;
 }
 
 function finishDockExit(edge) {
   if (!petWindow || !dockState || dockState.edge !== edge) return null;
   const configuredSize = WINDOW_SIZES[settings.size] || WINDOW_SIZES.medium;
-  const expandedBounds = {
-    ...petWindow.getBounds(),
-    ...configuredSize
-  };
-  const { workArea } = displayForBounds(expandedBounds);
-  const workRight = workArea.x + workArea.width;
-  const workBottom = workArea.y + workArea.height;
-  const freeBounds = { ...expandedBounds };
-
-  // Keep the window origin used by the return clip. Only nudge it by the few
-  // pixels needed to keep the visible idle character on-screen; transparent
-  // canvas may remain outside the work area and causes no visual jump.
-  if (edge === 'right') {
-    const characterRight = freeBounds.x + configuredSize.width * (430 / 500);
-    const overflow = Math.ceil(characterRight - (workRight - 2));
-    if (overflow > 0) freeBounds.x -= overflow;
-    freeBounds.y = Math.min(
-      Math.max(freeBounds.y, workArea.y),
-      workBottom - configuredSize.height
-    );
-  } else {
-    const characterBottom = freeBounds.y
-      + configuredSize.height
-      - configuredSize.width * (20 / 500);
-    const overflow = Math.ceil(characterBottom - (workBottom - 2));
-    if (overflow > 0) freeBounds.y -= overflow;
-    freeBounds.x = Math.min(
-      Math.max(freeBounds.x, workArea.x),
-      workRight - configuredSize.width
-    );
-  }
-  cancelDockWindowAnimation({ finish: true });
+  const freeBounds = dockExitBounds(edge);
+  if (!freeBounds) return null;
+  const completedPlayback = dockState.phase === 'leaving';
+  cancelDockWindowAnimation();
   dockState = null;
   actionMode = 'normal';
-  petWindow.setBounds(freeBounds, false);
-  settings.position = { x: freeBounds.x, y: freeBounds.y };
+  const currentBounds = petWindow.getBounds();
+  if (
+    !completedPlayback && (
+      currentBounds.x !== freeBounds.x || currentBounds.y !== freeBounds.y
+      || currentBounds.width !== freeBounds.width || currentBounds.height !== freeBounds.height
+    )
+  ) {
+    placeNormalCanvas(freeBounds, { allowResize: true });
+  } else {
+    setPetWindowShape([]);
+  }
+  const settledBounds = petWindow.getBounds();
+  settings.position = { x: settledBounds.x, y: settledBounds.y };
   saveSettings();
   return {
     mode: 'normal',
@@ -332,6 +418,7 @@ function resetDockState({ restore = true, notify = true } = {}) {
     cancelDockWindowAnimation();
     dockState = null;
     actionMode = 'normal';
+    setPetWindowShape([]);
   }
   if (notify && !petWindow.webContents.isDestroyed()) {
     petWindow.webContents.send('pet:dock-reset', geometry);
@@ -356,7 +443,7 @@ function forceNormalDockReset() {
   const freeBounds = clampFreeBounds(current, workArea);
   actionMode = 'normal';
   actionRestoreBounds = null;
-  petWindow.setBounds(freeBounds, false);
+  placeNormalCanvas(freeBounds, { allowResize: true });
   settings.position = { x: freeBounds.x, y: freeBounds.y };
   saveSettings();
   return {
@@ -393,14 +480,18 @@ function recomputeDockBounds() {
     lineRatio: media.lineRatio,
     overlap: dockOverlap(edge, configuredSize.width),
     mediaAlignX: 0.5,
-    mediaAlignY: 1
+    mediaAlignY: 1,
+    dockedMediaBounds: media.dockedMediaBounds,
+    dockedShapePadding: DOCKED_SHAPE_PADDING
   });
   const phase = dockState.phase;
   dockState = { edge, freeBounds, displayId: display.id, layout, phase };
-  if (phase === 'docked' || phase === 'entering') {
-    petWindow.setBounds(layout.dockBounds, false);
+  if (phase === 'docked') {
+    placeDockCanvas(layout, { docked: true });
+  } else if (phase === 'entering') {
+    placeDockCanvas(layout);
   } else if (phase === 'leaving') {
-    petWindow.setBounds({ ...freeBounds, ...configuredSize }, false);
+    placeNormalCanvas({ ...freeBounds, ...configuredSize }, { allowResize: true });
   }
   settings.position = { x: freeBounds.x, y: freeBounds.y };
   saveSettings();
@@ -428,7 +519,6 @@ function createPetWindow() {
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: false,
-    resizable: false,
     maximizable: false,
     minimizable: false,
     fullscreenable: false,
@@ -558,9 +648,18 @@ function setActionMode(mode) {
 function moveToCorner() {
   if (!petWindow) return;
   if (dockState) resetDockState({ restore: true, notify: true });
-  const { width, height } = petWindow.getBounds();
+  const current = petWindow.getBounds();
+  const normalSize = WINDOW_SIZES[settings.size] || WINDOW_SIZES.medium;
+  // Large spell canvases are intentional and only move once here. Every
+  // ordinary pet move must use the configured size instead of feeding a
+  // fractional-DPI getBounds() result back into the next native operation.
+  const { width, height } = actionMode === 'normal' ? normalSize : current;
   const position = defaultPosition(width, height);
-  petWindow.setPosition(position.x, position.y, true);
+  if (actionMode === 'normal') {
+    movePetWindowTo({ ...position, width, height });
+  } else {
+    petWindow.setBounds({ ...position, width, height }, false);
+  }
   settings.position = position;
   saveSettings();
 }
@@ -694,9 +793,9 @@ function registerIpc() {
     dragStartPoint = { ...cursor };
     dragPreviousPoint = { ...cursor };
     dragLastPoint = { ...cursor };
-    if (bounds.width !== dragSize.width || bounds.height !== dragSize.height) {
-      petWindow.setBounds({ x: bounds.x, y: bounds.y, ...dragSize }, false);
-    }
+    // A normal drag must never repair fractional-DPI rounding with a native
+    // resize. Its pointer animation is renderer-only; the surface stays fixed.
+    setPetWindowShape([]);
     return dragSize;
   });
 
@@ -727,7 +826,7 @@ function registerIpc() {
     dragStartPoint = { ...cursor };
     dragPreviousPoint = { ...cursor };
     dragLastPoint = { ...cursor };
-    petWindow.setBounds({ ...next, ...configuredSize }, false);
+    placeNormalCanvas({ ...next, ...configuredSize });
     return {
       mode: 'normal',
       normalWidth: configuredSize.width,
@@ -749,7 +848,7 @@ function registerIpc() {
       fixedSize.width,
       fixedSize.height
     );
-    petWindow.setBounds({ ...next, ...fixedSize }, false);
+    movePetWindowTo({ ...next, ...fixedSize });
   });
 
   ipcMain.on('pet:drag-lift', (_event, enabled, point) => {
@@ -772,7 +871,7 @@ function registerIpc() {
         fixedSize.width,
         fixedSize.height
       );
-      petWindow.setBounds({ ...next, ...fixedSize }, false);
+      movePetWindowTo({ ...next, ...fixedSize });
     }
   });
 

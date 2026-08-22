@@ -152,7 +152,9 @@ function computeDockLayout({
   lineRatio,
   overlap,
   mediaAlignX = 0.5,
-  mediaAlignY = 0.5
+  mediaAlignY = 0.5,
+  dockedMediaBounds: dockedMediaBoundsInput = null,
+  dockedShapePadding = 0
 }) {
   if (edge !== 'right' && edge !== 'bottom') {
     throw new TypeError("edge must be 'right' or 'bottom'");
@@ -172,6 +174,9 @@ function computeDockLayout({
   if (!isFiniteNumber(mediaAlignX) || mediaAlignX < 0 || mediaAlignX > 1
     || !isFiniteNumber(mediaAlignY) || mediaAlignY < 0 || mediaAlignY > 1) {
     throw new TypeError('mediaAlignX/mediaAlignY must be between 0 and 1');
+  }
+  if (!isFiniteNumber(dockedShapePadding) || dockedShapePadding < 0) {
+    throw new TypeError('dockedShapePadding must be a non-negative finite number');
   }
 
   const normalWidth = freeBounds.width;
@@ -194,8 +199,8 @@ function computeDockLayout({
   }
 
   // A valid desktop work area is normally much larger than every configured
-  // pet size. Capping here keeps the BrowserWindow wholly inside even on an
-  // unusually tiny virtual display without changing the returned normal size.
+  // pet size. Capping here keeps the visible crop inside even on an unusually
+  // tiny virtual display without changing the logical normal media size.
   width = Math.min(width, workArea.width);
   height = Math.min(height, workArea.height);
 
@@ -215,8 +220,66 @@ function computeDockLayout({
         height
       };
 
+  // Keep the native BrowserWindow at its normal size. `dockBounds` remains
+  // the exact screen-space rectangle that the old, physically cropped window
+  // occupied; `dockShape` applies that same top-left crop without changing the
+  // media viewport, scale, registration, or per-frame camera correction.
+  // The unused part of `dockCanvasBounds` extends past the work-area edge.
+  const dockCanvasBounds = {
+    x: dockBounds.x,
+    y: dockBounds.y,
+    width: normalWidth,
+    height: normalHeight
+  };
+  const dockShape = {
+    x: 0,
+    y: 0,
+    width: dockBounds.width,
+    height: dockBounds.height
+  };
+  let dockedShape = { ...dockShape };
+  if (dockedMediaBoundsInput) {
+    const mediaBounds = readRect(dockedMediaBoundsInput, 'dockedMediaBounds');
+    const left = Math.max(
+      dockShape.x,
+      Math.floor(mediaOffsetX + mediaBounds.x * mediaScale - dockedShapePadding)
+    );
+    const top = Math.max(
+      dockShape.y,
+      Math.floor(mediaOffsetY + mediaBounds.y * mediaScale - dockedShapePadding)
+    );
+    const right = Math.min(
+      dockShape.x + dockShape.width,
+      Math.ceil(
+        mediaOffsetX
+        + (mediaBounds.x + mediaBounds.width) * mediaScale
+        + dockedShapePadding
+      )
+    );
+    const bottom = Math.min(
+      dockShape.y + dockShape.height,
+      Math.ceil(
+        mediaOffsetY
+        + (mediaBounds.y + mediaBounds.height) * mediaScale
+        + dockedShapePadding
+      )
+    );
+    if (right <= left || bottom <= top) {
+      throw new RangeError('dockedMediaBounds must intersect the dock transition shape');
+    }
+    dockedShape = {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top
+    };
+  }
+
   return {
     dockBounds,
+    dockCanvasBounds,
+    dockShape,
+    dockedShape,
     normalWidth,
     normalHeight,
     mediaOffsetX,

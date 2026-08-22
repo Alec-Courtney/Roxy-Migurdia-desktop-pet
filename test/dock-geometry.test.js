@@ -183,6 +183,24 @@ test('right dock uses contain layout and crops just after the vertical line for 
     assert.equal(layout.dockBounds.height, size.height);
     assert.equal(layout.dockBounds.x + layout.dockBounds.width, 1920);
     assert.equal(layout.dockBounds.y + layout.dockBounds.height, 1040);
+    assert.deepEqual(layout.dockCanvasBounds, {
+      x: layout.dockBounds.x,
+      y: layout.dockBounds.y,
+      width: size.width,
+      height: size.height
+    });
+    assert.deepEqual(layout.dockShape, {
+      x: 0,
+      y: 0,
+      width: layout.dockBounds.width,
+      height: layout.dockBounds.height
+    });
+    assert.deepEqual({
+      x: layout.dockCanvasBounds.x + layout.dockShape.x,
+      y: layout.dockCanvasBounds.y + layout.dockShape.y,
+      width: layout.dockShape.width,
+      height: layout.dockShape.height
+    }, layout.dockBounds);
     assert.ok(layout.dockBounds.width - layout.lineOffset >= 5);
     assert.ok(layout.dockBounds.width - layout.lineOffset < 6);
   }
@@ -216,6 +234,24 @@ test('bottom dock aligns to taskbar workArea for all four sizes', () => {
       height: Math.ceil(lineOffset + 5)
     });
     assert.equal(layout.dockBounds.y + layout.dockBounds.height, 1040);
+    assert.deepEqual(layout.dockCanvasBounds, {
+      x: layout.dockBounds.x,
+      y: layout.dockBounds.y,
+      width: size.width,
+      height: size.height
+    });
+    assert.deepEqual(layout.dockShape, {
+      x: 0,
+      y: 0,
+      width: layout.dockBounds.width,
+      height: layout.dockBounds.height
+    });
+    assert.deepEqual({
+      x: layout.dockCanvasBounds.x + layout.dockShape.x,
+      y: layout.dockCanvasBounds.y + layout.dockShape.y,
+      width: layout.dockShape.width,
+      height: layout.dockShape.height
+    }, layout.dockBounds);
     assert.ok(layout.dockBounds.height - layout.lineOffset >= 5);
     assert.ok(layout.dockBounds.height - layout.lineOffset < 6);
   }
@@ -243,6 +279,69 @@ test('canonical media uses the same center-bottom alignment as the renderer', ()
     assert.ok(Math.abs(layout.lineOffset - expectedLine) < 1e-9);
     assert.equal(layout.dockBounds.height, Math.ceil(expectedLine + overlap));
     assert.equal(layout.dockBounds.y + layout.dockBounds.height, 1040);
+  }
+});
+
+test('held dock shapes use padded stable-pose and wave alpha unions', () => {
+  const mediaBounds = {
+    right: { x: 205, y: 141, width: 202, height: 441 },
+    bottom: { x: 98, y: 523, width: 273, height: 196 }
+  };
+  const lineRatios = { right: 393 / 500, bottom: 702 / 750 };
+  const padding = 4;
+
+  for (const size of SIZES) {
+    for (const edge of ['right', 'bottom']) {
+      const layout = computeDockLayout({
+        edge,
+        freeBounds: { x: 400, y: 500, ...size },
+        workArea: PRIMARY_WORK_AREA,
+        mediaWidth: 500,
+        mediaHeight: 750,
+        lineRatio: lineRatios[edge],
+        overlap: Math.max(8, Math.ceil(size.width * (edge === 'right' ? 0.025 : 0.032) + 2)),
+        mediaAlignX: 0.5,
+        mediaAlignY: 1,
+        dockedMediaBounds: mediaBounds[edge],
+        dockedShapePadding: padding
+      });
+      const bounds = mediaBounds[edge];
+      const left = Math.max(
+        0,
+        Math.floor(layout.mediaOffsetX + bounds.x * layout.mediaScale - padding)
+      );
+      const top = Math.max(
+        0,
+        Math.floor(layout.mediaOffsetY + bounds.y * layout.mediaScale - padding)
+      );
+      const right = Math.min(
+        layout.dockShape.width,
+        Math.ceil(
+          layout.mediaOffsetX
+          + (bounds.x + bounds.width) * layout.mediaScale
+          + padding
+        )
+      );
+      const bottom = Math.min(
+        layout.dockShape.height,
+        Math.ceil(
+          layout.mediaOffsetY
+          + (bounds.y + bounds.height) * layout.mediaScale
+          + padding
+        )
+      );
+
+      assert.deepEqual(layout.dockedShape, {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top
+      });
+      assert.ok(layout.dockedShape.x > 0);
+      assert.ok(layout.dockedShape.y > 0);
+      assert.ok(layout.dockedShape.width < layout.dockShape.width);
+      assert.ok(layout.dockedShape.height < layout.dockShape.height);
+    }
   }
 });
 
