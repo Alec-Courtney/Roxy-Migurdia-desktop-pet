@@ -69,3 +69,9 @@ pnpm build
 ```
 
 2.0 成品输出为 `release/2.0/RoxyDesktopPet-2.0-x64.exe`。已有的 1.0 成品位于 `release/1.0/RoxyDesktopPet-1.0.0-x64.exe`；本机生成的 1.0 解包目录和构建诊断也整理在 `release/1.0/`，但不提交到 Git。运行 `pnpm build` 不会覆盖它们。
+
+## 许可证
+
+- 程序代码采用 [PolyForm Noncommercial 1.0.0](./LICENSE)，仅允许非商业用途。
+- 本项目自制素材采用 [CC BY-NC-SA 4.0](./ASSETS_LICENSE.md)。
+- 《无职转生》相关角色、名称与设定等知识产权归各自权利人所有；本项目为非官方同人作品。
